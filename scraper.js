@@ -163,6 +163,11 @@ const scrapeItems = async (url) => {
             // Clean up any double spaces
             text = text.replace(/\s+/g, ' ').trim();
             
+            // Skip items without a price (likely unrelated/ads)
+            if (!price) {
+                return;
+            }
+            
             items.push({
                 id: itemId,
                 imageUrl: imgSrc,
@@ -176,7 +181,7 @@ const scrapeItems = async (url) => {
         }
     });
     
-    console.log(`Extracted ${items.length} items with details`);
+    console.log(`Extracted ${items.length} items with price`);
     return items;
 }
 

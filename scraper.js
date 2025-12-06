@@ -96,20 +96,26 @@ const scrapeItems = async (url) => {
     
     // If no specific feed items, try to find items with images
     if ($feedItems.length === 0) {
-        // Find all elements that contain listing images
-        $('[class*="feed"]').each((_, container) => {
-            const $container = $(container);
-            const imgSrc = $container.find('img').attr('src');
+        // Find all links that contain listing images
+        $('a').each((_, linkElm) => {
+            const $link = $(linkElm);
+            const imgSrc = $link.find('img').attr('src');
             
             if (imgSrc && 
                 imgSrc.includes('img.yad2.co.il/Pic/') &&
                 !imgSrc.includes('placeholder') &&
                 !imgSrc.includes('logo')) {
                 
-                // Try to extract text content from the container or parent
-                let text = $container.text().trim();
+                // Get the link URL
+                let itemUrl = $link.attr('href');
+                if (itemUrl && !itemUrl.startsWith('http')) {
+                    itemUrl = 'https://www.yad2.co.il' + itemUrl;
+                }
+                
+                // Try to extract text content from the link or its parent
+                let text = $link.text().trim();
                 if (!text || text.length < 10) {
-                    text = $container.parent().text().trim();
+                    text = $link.parent().text().trim();
                 }
                 
                 // Clean up the text
@@ -117,33 +123,46 @@ const scrapeItems = async (url) => {
                 
                 items.push({
                     imageUrl: imgSrc,
+                    url: itemUrl || '',
                     text: text || 'דירה להשכרה',
                     id: imgSrc // Use image URL as unique identifier
                 });
             }
         });
     } else {
-        $feedItems.each((_, elm) => {
-            const $item = $(elm);
-            const imgSrc = $item.find('img').attr('src');
+        // Look for links that contain feed items
+        $('a').each((_, linkElm) => {
+            const $link = $(linkElm);
+            const $item = $link.find('[class*="feeditem"], [class*="feed_item"]');
+            
+            if ($item.length === 0) return;
+            
+            const imgSrc = $link.find('img').attr('src');
             
             if (imgSrc && 
                 imgSrc.includes('img.yad2.co.il/Pic/') &&
                 !imgSrc.includes('placeholder') &&
                 !imgSrc.includes('logo')) {
                 
+                // Get the link URL
+                let itemUrl = $link.attr('href');
+                if (itemUrl && !itemUrl.startsWith('http')) {
+                    itemUrl = 'https://www.yad2.co.il' + itemUrl;
+                }
+                
                 // Extract various details from the item
-                const price = $item.find('[class*="price"]').text().trim() || 
-                              $item.find('[data-testid="price"]').text().trim();
-                const location = $item.find('[class*="location"], [class*="address"]').text().trim();
-                const rooms = $item.find('[class*="room"]').text().trim();
-                const size = $item.find('[class*="square"], [class*="size"]').text().trim();
+                const price = $link.find('[class*="price"]').text().trim() || 
+                              $link.find('[data-testid="price"]').text().trim();
+                const location = $link.find('[class*="location"], [class*="address"]').text().trim();
+                const rooms = $link.find('[class*="room"]').text().trim();
+                const size = $link.find('[class*="square"], [class*="size"]').text().trim();
                 
                 // Get all text as fallback
-                let fullText = $item.text().replace(/\s+/g, ' ').trim().substring(0, 500);
+                let fullText = $link.text().replace(/\s+/g, ' ').trim().substring(0, 500);
                 
                 items.push({
                     imageUrl: imgSrc,
+                    url: itemUrl || '',
                     price,
                     location,
                     rooms,
@@ -280,6 +299,11 @@ const formatItemCaption = (item, topic) => {
         // Clean and truncate text for caption (Telegram limit is 1024 chars)
         const cleanText = item.text.substring(0, 400);
         caption += `\n${cleanText}`;
+    }
+    
+    // Add the URL link at the end
+    if (item.url) {
+        caption += `\n\n🔗 <a href="${item.url}">לחץ כאן לצפייה במודעה</a>`;
     }
     
     return caption;

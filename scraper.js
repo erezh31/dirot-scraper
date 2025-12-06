@@ -14,6 +14,13 @@ if (isTestMode) {
     console.log('🧪 Running in TEST MODE - Telegram messages will be skipped\n');
 }
 
+// Extract item ID from URL (e.g., /item/zvr626ts -> zvr626ts)
+const extractItemId = (url) => {
+    if (!url) return null;
+    const match = url.match(/\/item\/([a-zA-Z0-9]+)/);
+    return match ? match[1] : null;
+}
+
 const getYad2Response = async (url) => {
     try {
         const browser = await chromium.launch({
@@ -94,85 +101,57 @@ const scrapeItems = async (url) => {
     const $feedItems = $('[class*="feeditem"], [class*="feed_item"], [data-testid="feed-item"]');
     console.log(`Found ${$feedItems.length} feed items`);
     
-    // If no specific feed items, try to find items with images
-    if ($feedItems.length === 0) {
-        // Find all links that contain listing images
-        $('a').each((_, linkElm) => {
-            const $link = $(linkElm);
-            const imgSrc = $link.find('img').attr('src');
+    // Find all links that contain listing images
+    $('a').each((_, linkElm) => {
+        const $link = $(linkElm);
+        const imgSrc = $link.find('img').attr('src');
+        
+        if (imgSrc && 
+            imgSrc.includes('img.yad2.co.il/Pic/') &&
+            !imgSrc.includes('placeholder') &&
+            !imgSrc.includes('logo')) {
             
-            if (imgSrc && 
-                imgSrc.includes('img.yad2.co.il/Pic/') &&
-                !imgSrc.includes('placeholder') &&
-                !imgSrc.includes('logo')) {
-                
-                // Get the link URL
-                let itemUrl = $link.attr('href');
-                if (itemUrl && !itemUrl.startsWith('http')) {
-                    itemUrl = 'https://www.yad2.co.il' + itemUrl;
-                }
-                
-                // Try to extract text content from the link or its parent
-                let text = $link.text().trim();
-                if (!text || text.length < 10) {
-                    text = $link.parent().text().trim();
-                }
-                
-                // Clean up the text
-                text = text.replace(/\s+/g, ' ').substring(0, 500);
-                
-                items.push({
-                    imageUrl: imgSrc,
-                    url: itemUrl || '',
-                    text: text || 'דירה להשכרה',
-                    id: imgSrc // Use image URL as unique identifier
-                });
+            // Get the link URL
+            let itemUrl = $link.attr('href');
+            if (itemUrl && !itemUrl.startsWith('http')) {
+                itemUrl = 'https://www.yad2.co.il' + itemUrl;
             }
-        });
-    } else {
-        // Look for links that contain feed items
-        $('a').each((_, linkElm) => {
-            const $link = $(linkElm);
-            const $item = $link.find('[class*="feeditem"], [class*="feed_item"]');
             
-            if ($item.length === 0) return;
+            // Extract item ID from URL
+            const itemId = extractItemId(itemUrl);
+            if (!itemId) return; // Skip if no valid item ID
             
-            const imgSrc = $link.find('img').attr('src');
+            // Skip if we already have this item (dedup)
+            if (items.some(item => item.id === itemId)) return;
             
-            if (imgSrc && 
-                imgSrc.includes('img.yad2.co.il/Pic/') &&
-                !imgSrc.includes('placeholder') &&
-                !imgSrc.includes('logo')) {
-                
-                // Get the link URL
-                let itemUrl = $link.attr('href');
-                if (itemUrl && !itemUrl.startsWith('http')) {
-                    itemUrl = 'https://www.yad2.co.il' + itemUrl;
-                }
-                
-                // Extract various details from the item
-                const price = $link.find('[class*="price"]').text().trim() || 
-                              $link.find('[data-testid="price"]').text().trim();
-                const location = $link.find('[class*="location"], [class*="address"]').text().trim();
-                const rooms = $link.find('[class*="room"]').text().trim();
-                const size = $link.find('[class*="square"], [class*="size"]').text().trim();
-                
-                // Get all text as fallback
-                let fullText = $link.text().replace(/\s+/g, ' ').trim().substring(0, 500);
-                
-                items.push({
-                    imageUrl: imgSrc,
-                    url: itemUrl || '',
-                    price,
-                    location,
-                    rooms,
-                    size,
-                    text: fullText,
-                    id: imgSrc
-                });
+            // Try to extract text content from the link or its parent
+            let text = $link.text().trim();
+            if (!text || text.length < 10) {
+                text = $link.parent().text().trim();
             }
-        });
-    }
+            
+            // Clean up the text
+            text = text.replace(/\s+/g, ' ').substring(0, 500);
+            
+            // Extract various details
+            const price = $link.find('[class*="price"]').text().trim() || 
+                          $link.find('[data-testid="price"]').text().trim();
+            const location = $link.find('[class*="location"], [class*="address"]').text().trim();
+            const rooms = $link.find('[class*="room"]').text().trim();
+            const size = $link.find('[class*="square"], [class*="size"]').text().trim();
+            
+            items.push({
+                id: itemId,
+                imageUrl: imgSrc,
+                url: itemUrl || '',
+                price,
+                location,
+                rooms,
+                size,
+                text: text || 'דירה להשכרה'
+            });
+        }
+    });
     
     console.log(`Extracted ${items.length} items with details`);
     return items;
@@ -180,17 +159,28 @@ const scrapeItems = async (url) => {
 
 const checkIfHasNewItems = async (items, topic) => {
     const filePath = `./data/${topic}.json`;
-    let savedIds = [];
+    let savedItems = {};
+    
     try {
-        savedIds = require(filePath);
+        const fileContent = fs.readFileSync(filePath, 'utf-8');
+        const parsed = JSON.parse(fileContent);
+        
+        // Handle migration from old array format to new dict format
+        if (Array.isArray(parsed)) {
+            console.log('Migrating from old array format to new dict format...');
+            // Old format was array of image URLs, we'll start fresh with dict
+            savedItems = {};
+        } else {
+            savedItems = parsed;
+        }
     } catch (e) {
-        if (e.code === "MODULE_NOT_FOUND") {
+        if (e.code === "ENOENT") {
             try {
                 fs.mkdirSync('data');
             } catch (mkdirErr) {
                 // Directory might already exist
             }
-            fs.writeFileSync(filePath, '[]');
+            fs.writeFileSync(filePath, '{}');
         } else {
             console.log(e);
             throw new Error(`Could not read / create ${filePath}`);
@@ -198,35 +188,46 @@ const checkIfHasNewItems = async (items, topic) => {
     }
     
     let shouldUpdateFile = false;
+    const currentIds = items.map(item => item.id);
     
-    // Filter out items that no longer exist
-    savedIds = savedIds.filter(savedId => {
-        const exists = items.some(item => item.id === savedId);
-        if (!exists) shouldUpdateFile = true;
-        return exists;
-    });
+    // Remove items that no longer exist in the feed
+    for (const savedId of Object.keys(savedItems)) {
+        if (!currentIds.includes(savedId)) {
+            delete savedItems[savedId];
+            shouldUpdateFile = true;
+        }
+    }
     
-    // Find new items
-    const newItems = items.filter(item => !savedIds.includes(item.id));
+    // Find new items (not in saved dict)
+    const newItems = items.filter(item => !savedItems[item.id]);
     
     if (newItems.length > 0) {
         console.log(`=== New Items Found for "${topic}" ===`);
         console.log(`Total new items: ${newItems.length}`);
         newItems.forEach((item, index) => {
-            console.log(`${index + 1}. ${item.imageUrl}`);
-            if (item.price) console.log(`   Price: ${item.price}`);
-            if (item.location) console.log(`   Location: ${item.location}`);
+            console.log(`${index + 1}. [${item.id}] ${item.text?.substring(0, 60)}...`);
         });
         console.log('=====================================');
         
-        // Add new item IDs to saved list
-        newItems.forEach(item => savedIds.push(item.id));
+        // Add new items to saved dict
+        newItems.forEach(item => {
+            savedItems[item.id] = {
+                imageUrl: item.imageUrl,
+                url: item.url,
+                price: item.price,
+                location: item.location,
+                rooms: item.rooms,
+                size: item.size,
+                text: item.text,
+                addedAt: new Date().toISOString()
+            };
+        });
         shouldUpdateFile = true;
     }
     
     if (shouldUpdateFile) {
-        const updatedIds = JSON.stringify(savedIds, null, 2);
-        fs.writeFileSync(filePath, updatedIds);
+        const updatedData = JSON.stringify(savedItems, null, 2);
+        fs.writeFileSync(filePath, updatedData);
         await createPushFlagForWorkflow();
     }
     

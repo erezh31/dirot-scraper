@@ -8,6 +8,8 @@ const config = require('./config.json');
 const isTestMode = process.argv.includes('--test') || 
     (!process.env.API_TOKEN && !config.telegramApiToken);
 
+const maxResultsPerRun = config.maxResultsPerRun || 5;
+
 if (isTestMode) {
     console.log('🧪 Running in TEST MODE - Telegram messages will be skipped\n');
 }
@@ -71,7 +73,7 @@ const getYad2Response = async (url) => {
     }
 }
 
-const scrapeItemsAndExtractImgUrls = async (url) => {
+const scrapeItems = async (url) => {
     const yad2Html = await getYad2Response(url);
     if (!yad2Html) {
         throw new Error("Could not get Yad2 response");
@@ -86,73 +88,129 @@ const scrapeItemsAndExtractImgUrls = async (url) => {
         throw new Error("Bot detection");
     }
     
-    // Try to find feed items with different selectors
-    let $feedItems = $(".feeditem").find(".pic");
-    console.log(`Found ${$feedItems.length} items with selector ".feeditem .pic"`);
+    const items = [];
     
-    // Try alternative selectors if main one doesn't work
+    // Try to find feed items - look for the main feed container
+    const $feedItems = $('[class*="feeditem"], [class*="feed_item"], [data-testid="feed-item"]');
+    console.log(`Found ${$feedItems.length} feed items`);
+    
+    // If no specific feed items, try to find items with images
     if ($feedItems.length === 0) {
-        $feedItems = $('[data-testid="feed-item"]');
-        console.log(`Found ${$feedItems.length} items with selector '[data-testid="feed-item"]'`);
-    }
-    if ($feedItems.length === 0) {
-        $feedItems = $('[class*="feed"]');
-        console.log(`Found ${$feedItems.length} items with selector '[class*="feed"]'`);
+        // Find all elements that contain listing images
+        $('[class*="feed"]').each((_, container) => {
+            const $container = $(container);
+            const imgSrc = $container.find('img').attr('src');
+            
+            if (imgSrc && 
+                imgSrc.includes('img.yad2.co.il/Pic/') &&
+                !imgSrc.includes('placeholder') &&
+                !imgSrc.includes('logo')) {
+                
+                // Try to extract text content from the container or parent
+                let text = $container.text().trim();
+                if (!text || text.length < 10) {
+                    text = $container.parent().text().trim();
+                }
+                
+                // Clean up the text
+                text = text.replace(/\s+/g, ' ').substring(0, 500);
+                
+                items.push({
+                    imageUrl: imgSrc,
+                    text: text || 'דירה להשכרה',
+                    id: imgSrc // Use image URL as unique identifier
+                });
+            }
+        });
+    } else {
+        $feedItems.each((_, elm) => {
+            const $item = $(elm);
+            const imgSrc = $item.find('img').attr('src');
+            
+            if (imgSrc && 
+                imgSrc.includes('img.yad2.co.il/Pic/') &&
+                !imgSrc.includes('placeholder') &&
+                !imgSrc.includes('logo')) {
+                
+                // Extract various details from the item
+                const price = $item.find('[class*="price"]').text().trim() || 
+                              $item.find('[data-testid="price"]').text().trim();
+                const location = $item.find('[class*="location"], [class*="address"]').text().trim();
+                const rooms = $item.find('[class*="room"]').text().trim();
+                const size = $item.find('[class*="square"], [class*="size"]').text().trim();
+                
+                // Get all text as fallback
+                let fullText = $item.text().replace(/\s+/g, ' ').trim().substring(0, 500);
+                
+                items.push({
+                    imageUrl: imgSrc,
+                    price,
+                    location,
+                    rooms,
+                    size,
+                    text: fullText,
+                    id: imgSrc
+                });
+            }
+        });
     }
     
-    const imageUrls = []
-    $feedItems.each((_, elm) => {
-        const imgSrc = $(elm).find("img").attr('src');
-        if (imgSrc && 
-            imgSrc.includes('img.yad2.co.il/Pic/') &&  // Only actual listing images
-            !imgSrc.includes('placeholder') &&
-            !imgSrc.includes('logo')) {
-            imageUrls.push(imgSrc)
-        }
-    })
-    return imageUrls;
+    console.log(`Extracted ${items.length} items with details`);
+    return items;
 }
 
-const checkIfHasNewItem = async (imgUrls, topic) => {
+const checkIfHasNewItems = async (items, topic) => {
     const filePath = `./data/${topic}.json`;
-    let savedUrls = [];
+    let savedIds = [];
     try {
-        savedUrls = require(filePath);
+        savedIds = require(filePath);
     } catch (e) {
         if (e.code === "MODULE_NOT_FOUND") {
-            fs.mkdirSync('data');
+            try {
+                fs.mkdirSync('data');
+            } catch (mkdirErr) {
+                // Directory might already exist
+            }
             fs.writeFileSync(filePath, '[]');
         } else {
             console.log(e);
             throw new Error(`Could not read / create ${filePath}`);
         }
     }
+    
     let shouldUpdateFile = false;
-    savedUrls = savedUrls.filter(savedUrl => {
-        shouldUpdateFile = true;
-        return imgUrls.includes(savedUrl);
+    
+    // Filter out items that no longer exist
+    savedIds = savedIds.filter(savedId => {
+        const exists = items.some(item => item.id === savedId);
+        if (!exists) shouldUpdateFile = true;
+        return exists;
     });
-    const newItems = [];
-    imgUrls.forEach(url => {
-        if (!savedUrls.includes(url)) {
-            savedUrls.push(url);
-            newItems.push(url);
-            shouldUpdateFile = true;
-        }
-    });
+    
+    // Find new items
+    const newItems = items.filter(item => !savedIds.includes(item.id));
+    
     if (newItems.length > 0) {
         console.log(`=== New Items Found for "${topic}" ===`);
         console.log(`Total new items: ${newItems.length}`);
         newItems.forEach((item, index) => {
-            console.log(`${index + 1}. ${item}`);
+            console.log(`${index + 1}. ${item.imageUrl}`);
+            if (item.price) console.log(`   Price: ${item.price}`);
+            if (item.location) console.log(`   Location: ${item.location}`);
         });
         console.log('=====================================');
+        
+        // Add new item IDs to saved list
+        newItems.forEach(item => savedIds.push(item.id));
+        shouldUpdateFile = true;
     }
+    
     if (shouldUpdateFile) {
-        const updatedUrls = JSON.stringify(savedUrls, null, 2);
-        fs.writeFileSync(filePath, updatedUrls);
+        const updatedIds = JSON.stringify(savedIds, null, 2);
+        fs.writeFileSync(filePath, updatedIds);
         await createPushFlagForWorkflow();
     }
+    
     return newItems;
 }
 
@@ -162,41 +220,127 @@ const createPushFlagForWorkflow = () => {
 
 const sendTelegramMessage = async (telenode, message, chatId) => {
     if (isTestMode) {
-        console.log(`[Telegram] ${message}`);
+        console.log(`[Telegram Text] ${message}`);
         return;
     }
     await telenode.sendTextMessage(message, chatId);
+}
+
+const sendTelegramPhoto = async (apiToken, chatId, photoUrl, caption) => {
+    if (isTestMode) {
+        console.log(`[Telegram Photo] ${photoUrl}`);
+        console.log(`[Caption] ${caption}`);
+        return;
+    }
+    
+    try {
+        const response = await fetch(`https://api.telegram.org/bot${apiToken}/sendPhoto`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                chat_id: chatId,
+                photo: photoUrl,
+                caption: caption,
+                parse_mode: 'HTML'
+            })
+        });
+        
+        const result = await response.json();
+        if (!result.ok) {
+            console.log(`Failed to send photo: ${result.description}`);
+            // Fallback to text message if photo fails
+            const telenode = new Telenode({ apiToken });
+            await telenode.sendTextMessage(`${caption}\n\n📷 ${photoUrl}`, chatId);
+        }
+    } catch (err) {
+        console.log('Error sending photo:', err.message);
+    }
+}
+
+const formatItemCaption = (item, topic) => {
+    let caption = `🏠 <b>דירה חדשה - ${topic}</b>\n\n`;
+    
+    if (item.price) {
+        caption += `💰 מחיר: ${item.price}\n`;
+    }
+    if (item.location) {
+        caption += `📍 מיקום: ${item.location}\n`;
+    }
+    if (item.rooms) {
+        caption += `🚪 חדרים: ${item.rooms}\n`;
+    }
+    if (item.size) {
+        caption += `📐 גודל: ${item.size}\n`;
+    }
+    
+    // Add some of the text if we don't have structured data
+    if (!item.price && !item.location && item.text) {
+        // Clean and truncate text for caption (Telegram limit is 1024 chars)
+        const cleanText = item.text.substring(0, 400);
+        caption += `\n${cleanText}`;
+    }
+    
+    return caption;
 }
 
 const scrape = async (topic, url) => {
     const apiToken = process.env.API_TOKEN || config.telegramApiToken;
     const chatId = process.env.CHAT_ID || config.chatId;
     const telenode = new Telenode({apiToken})
+    
     try {
-        await sendTelegramMessage(telenode, `Starting scanning ${topic} on link:\n${url}`, chatId)
-        const scrapeImgResults = await scrapeItemsAndExtractImgUrls(url);
-        console.log(`Found ${scrapeImgResults.length} total items for "${topic}"`);
-        const newItems = await checkIfHasNewItem(scrapeImgResults, topic);
+        await sendTelegramMessage(telenode, `🔍 מתחיל סריקה: ${topic}\n${url}`, chatId);
+        
+        const scrapedItems = await scrapeItems(url);
+        console.log(`Found ${scrapedItems.length} total items for "${topic}"`);
+        
+        const newItems = await checkIfHasNewItems(scrapedItems, topic);
+        
         if (newItems.length > 0) {
-            const newItemsJoined = newItems.join("\n----------\n");
-            const msg = `${newItems.length} new items:\n${newItemsJoined}`
-            console.log(`Sending ${newItems.length} new items to Telegram for "${topic}"`);
-            await sendTelegramMessage(telenode, msg, chatId);
+            // Limit to maxResultsPerRun
+            const itemsToSend = newItems.slice(0, maxResultsPerRun);
+            const skippedCount = newItems.length - itemsToSend.length;
+            
+            console.log(`Sending ${itemsToSend.length} new items to Telegram for "${topic}"`);
+            if (skippedCount > 0) {
+                console.log(`(Skipping ${skippedCount} additional items due to maxResultsPerRun limit)`);
+            }
+            
+            // Send summary message
+            await sendTelegramMessage(
+                telenode, 
+                `🎉 נמצאו ${newItems.length} דירות חדשות!\n${skippedCount > 0 ? `(מציג ${itemsToSend.length} מתוכן)` : ''}`, 
+                chatId
+            );
+            
+            // Send each item as a separate photo message
+            for (const item of itemsToSend) {
+                const caption = formatItemCaption(item, topic);
+                await sendTelegramPhoto(apiToken, chatId, item.imageUrl, caption);
+                
+                // Small delay between messages to avoid rate limiting
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            
         } else {
             console.log(`No new items found for "${topic}"`);
-            await sendTelegramMessage(telenode, "No new items were added", chatId);
+            await sendTelegramMessage(telenode, "✅ אין דירות חדשות", chatId);
         }
     } catch (e) {
         let errMsg = e?.message || "";
         if (errMsg) {
             errMsg = `Error: ${errMsg}`
         }
-        await sendTelegramMessage(telenode, `Scan workflow failed... 😥\n${errMsg}`, chatId)
+        await sendTelegramMessage(telenode, `❌ הסריקה נכשלה... 😥\n${errMsg}`, chatId)
         throw new Error(e)
     }
 }
 
 const program = async () => {
+    console.log(`Max results per run: ${maxResultsPerRun}`);
+    
     await Promise.all(config.projects.filter(project => {
         if (project.disabled) {
             console.log(`Topic "${project.topic}" is disabled. Skipping.`);

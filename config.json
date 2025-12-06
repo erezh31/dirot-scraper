@@ -1,6 +1,7 @@
 {
   "telegramApiToken": null,
   "chatId": null,
+  "maxResultsPerRun": 5,
   "projects": [
     {
       "topic": "Diro",

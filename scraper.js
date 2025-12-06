@@ -406,8 +406,8 @@ const scrape = async (topic, url) => {
                 const caption = formatItemCaption(item, topic);
                 await sendTelegramPhoto(apiToken, chatId, item.imageUrl, caption);
                 
-                // Delay between messages to avoid Telegram rate limiting
-                await new Promise(resolve => setTimeout(resolve, 1500));
+                // Delay between messages to avoid Telegram rate limiting (3 seconds)
+                await new Promise(resolve => setTimeout(resolve, 3000));
             }
             
         } else {

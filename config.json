@@ -1,7 +1,7 @@
 {
   "telegramApiToken": null,
   "chatId": null,
-  "maxResultsPerRun": 20,
+  "maxResultsPerRun": 10,
   "projects": [
     {
       "topic": "דירות פלורנטין",

@@ -180,7 +180,7 @@ const scrapeItems = async (url) => {
     return items;
 }
 
-const checkIfHasNewItems = async (items, topic) => {
+const checkIfHasNewItems = async (items, topic, maxNewItems) => {
     const filePath = `./data/${topic}.json`;
     let savedItems = {};
     
@@ -191,7 +191,6 @@ const checkIfHasNewItems = async (items, topic) => {
         // Handle migration from old array format to new dict format
         if (Array.isArray(parsed)) {
             console.log('Migrating from old array format to new dict format...');
-            // Old format was array of image URLs, we'll start fresh with dict
             savedItems = {};
         } else {
             savedItems = parsed;
@@ -210,30 +209,23 @@ const checkIfHasNewItems = async (items, topic) => {
         }
     }
     
-    let shouldUpdateFile = false;
-    const currentIds = items.map(item => item.id);
+    // Find NEW items (not in saved dict) - these are items we haven't seen before
+    const allNewItems = items.filter(item => !savedItems[item.id]);
     
-    // Remove items that no longer exist in the feed
-    for (const savedId of Object.keys(savedItems)) {
-        if (!currentIds.includes(savedId)) {
-            delete savedItems[savedId];
-            shouldUpdateFile = true;
-        }
-    }
+    // Limit to maxNewItems for notifications
+    const newItemsToNotify = allNewItems.slice(0, maxNewItems);
     
-    // Find new items (not in saved dict)
-    const newItems = items.filter(item => !savedItems[item.id]);
-    
-    if (newItems.length > 0) {
+    if (allNewItems.length > 0) {
         console.log(`=== New Items Found for "${topic}" ===`);
-        console.log(`Total new items: ${newItems.length}`);
-        newItems.forEach((item, index) => {
+        console.log(`Total new items: ${allNewItems.length}`);
+        console.log(`Will notify for: ${newItemsToNotify.length} items`);
+        newItemsToNotify.forEach((item, index) => {
             console.log(`${index + 1}. [${item.id}] ${item.text?.substring(0, 60)}...`);
         });
         console.log('=====================================');
         
-        // Add new items to saved dict
-        newItems.forEach(item => {
+        // Only save the items we're notifying about
+        newItemsToNotify.forEach(item => {
             savedItems[item.id] = {
                 imageUrl: item.imageUrl,
                 url: item.url,
@@ -245,16 +237,13 @@ const checkIfHasNewItems = async (items, topic) => {
                 addedAt: new Date().toISOString()
             };
         });
-        shouldUpdateFile = true;
-    }
-    
-    if (shouldUpdateFile) {
+        
         const updatedData = JSON.stringify(savedItems, null, 2);
         fs.writeFileSync(filePath, updatedData);
         await createPushFlagForWorkflow();
     }
     
-    return newItems;
+    return newItemsToNotify;
 }
 
 const createPushFlagForWorkflow = () => {
@@ -343,9 +332,8 @@ const scrape = async (topic, url) => {
         const scrapedItems = await scrapeItems(url);
         console.log(`Found ${scrapedItems.length} total items for "${topic}"`);
         
-        // Apply limit BEFORE saving - only process up to maxResultsPerRun items
-        const limitedItems = scrapedItems.slice(0, maxResultsPerRun);
-        const newItems = await checkIfHasNewItems(limitedItems, topic);
+        // Check ALL items against saved data, but limit NEW items to maxResultsPerRun
+        const newItems = await checkIfHasNewItems(scrapedItems, topic, maxResultsPerRun);
         
         if (newItems.length > 0) {
             console.log(`Sending ${newItems.length} new items to Telegram for "${topic}"`);

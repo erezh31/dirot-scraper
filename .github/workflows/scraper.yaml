@@ -36,9 +36,14 @@ jobs:
       - name: Push new json data if needed
         run: |
           if [ -f ./push_me ]; then
-            echo Pushing to Github...
+            echo "Checking for changes..."
             git add .
-            DATE=$(date +"%F, %H:%M:%S")
-            git commit -m "updated data - $DATE"
-            git push
+            if git diff --staged --quiet; then
+              echo "No changes to commit, skipping push."
+            else
+              echo "Pushing to Github..."
+              DATE=$(date +"%F, %H:%M:%S")
+              git commit -m "updated data - $DATE"
+              git push
+            fi
           fi

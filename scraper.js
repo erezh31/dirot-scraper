@@ -255,6 +255,59 @@ const createPushFlagForWorkflow = () => {
     fs.writeFileSync("push_me", "")
 }
 
+// Execution metadata management
+const EXECUTION_META_PATH = './data/execution_meta.json';
+
+const getExecutionMeta = () => {
+    try {
+        const content = fs.readFileSync(EXECUTION_META_PATH, 'utf-8');
+        return JSON.parse(content);
+    } catch (e) {
+        return { projects: {} };
+    }
+};
+
+const updateExecutionMeta = (topic, success = true) => {
+    const meta = getExecutionMeta();
+    meta.projects[topic] = {
+        lastExecution: new Date().toISOString(),
+        success
+    };
+    fs.writeFileSync(EXECUTION_META_PATH, JSON.stringify(meta, null, 2));
+    createPushFlagForWorkflow();
+};
+
+const getNextProjectToRun = (activeProjects) => {
+    const meta = getExecutionMeta();
+    
+    // Find the project with the oldest last execution (or never executed)
+    let oldestProject = null;
+    let oldestTime = Infinity;
+    
+    for (const project of activeProjects) {
+        const projectMeta = meta.projects[project.topic];
+        
+        if (!projectMeta) {
+            // Never executed - run this one
+            console.log(`Project "${project.topic}" has never been executed - selecting it`);
+            return project;
+        }
+        
+        const lastExecution = new Date(projectMeta.lastExecution).getTime();
+        if (lastExecution < oldestTime) {
+            oldestTime = lastExecution;
+            oldestProject = project;
+        }
+    }
+    
+    if (oldestProject) {
+        const timeSince = Math.round((Date.now() - oldestTime) / 1000 / 60);
+        console.log(`Project "${oldestProject.topic}" was last executed ${timeSince} minutes ago - selecting it`);
+    }
+    
+    return oldestProject;
+};
+
 const sendTelegramMessage = async (telenode, message, chatId) => {
     if (isTestMode) {
         console.log(`[Telegram Text] ${message}`);
@@ -375,7 +428,7 @@ const scrape = async (topic, url) => {
 const program = async () => {
     console.log(`Max results per run: ${maxResultsPerRun}`);
     
-    // Run projects sequentially to avoid Telegram rate limiting
+    // Get active projects
     const activeProjects = config.projects.filter(project => {
         if (project.disabled) {
             console.log(`Topic "${project.topic}" is disabled. Skipping.`);
@@ -383,10 +436,29 @@ const program = async () => {
         return !project.disabled;
     });
     
-    for (const project of activeProjects) {
-        await scrape(project.topic, project.url);
-        // Delay between projects
-        await new Promise(resolve => setTimeout(resolve, 2000));
+    if (activeProjects.length === 0) {
+        console.log('No active projects to run');
+        return;
+    }
+    
+    // Select ONE project to run - the one that hasn't been updated the longest
+    const projectToRun = getNextProjectToRun(activeProjects);
+    
+    if (!projectToRun) {
+        console.log('No project selected to run');
+        return;
+    }
+    
+    console.log(`\n🎯 Running single project: "${projectToRun.topic}"\n`);
+    
+    try {
+        await scrape(projectToRun.topic, projectToRun.url);
+        updateExecutionMeta(projectToRun.topic, true);
+        console.log(`\n✅ Successfully completed "${projectToRun.topic}"`);
+    } catch (e) {
+        updateExecutionMeta(projectToRun.topic, false);
+        console.error(`\n❌ Failed to complete "${projectToRun.topic}":`, e.message);
+        throw e;
     }
 };
 

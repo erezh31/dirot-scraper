@@ -1,11 +1,15 @@
 {
   "telegramApiToken": null,
   "chatId": null,
-  "maxResultsPerRun": 5,
+  "maxResultsPerRun": 20,
   "projects": [
     {
-      "topic": "Diro",
-      "url": "https://www.yad2.co.il/realestate/rent?minPrice=9000&maxPrice=16000&minRooms=2.5&maxRooms=5&minSquaremeter=100&multiNeighborhood=495%2C205%2C848&zoom=14"
+      "topic": "דירות פלורנטין",
+      "url": "https://www.yad2.co.il/realestate/rent?minPrice=9000&maxPrice=16000&minRooms=2.5&maxRooms=5&minSquaremeter=100&multiNeighborhood=495%2C205%2C307%2C847&bBox=32.035002%2C34.741307%2C32.067619%2C34.793305&zoom=13"
+    },
+    {
+      "topic": "דירות לב העיר",
+      "url": "https://www.yad2.co.il/realestate/rent?minPrice=9000&maxPrice=16000&minRooms=2.5&maxRooms=5&minSquaremeter=100&multiNeighborhood=1461%2C1520%2C1521"
     }
   ]
 }

@@ -327,8 +327,6 @@ const scrape = async (topic, url) => {
     const telenode = new Telenode({apiToken})
     
     try {
-        await sendTelegramMessage(telenode, `🔍 מתחיל סריקה: ${topic}\n${url}`, chatId);
-        
         const scrapedItems = await scrapeItems(url);
         console.log(`Found ${scrapedItems.length} total items for "${topic}"`);
         
@@ -356,7 +354,6 @@ const scrape = async (topic, url) => {
             
         } else {
             console.log(`No new items found for "${topic}"`);
-            await sendTelegramMessage(telenode, "✅ אין דירות חדשות", chatId);
         }
     } catch (e) {
         let errMsg = e?.message || "";

@@ -124,29 +124,52 @@ const scrapeItems = async (url) => {
             // Skip if we already have this item (dedup)
             if (items.some(item => item.id === itemId)) return;
             
-            // Try to extract text content from the link or its parent
-            let text = $link.text().trim();
-            if (!text || text.length < 10) {
-                text = $link.parent().text().trim();
+            // Get the parent card/container for better text extraction
+            const $card = $link.closest('[class*="item"], [class*="card"], [class*="feed"]').length 
+                ? $link.closest('[class*="item"], [class*="card"], [class*="feed"]') 
+                : $link.parent();
+            
+            // Get all text and clean it up
+            let rawText = $card.text().trim().replace(/\s+/g, ' ');
+            
+            // Try to parse the text to extract structured info
+            // Yad2 format usually: "₪ PRICE ADDRESS TYPE, AREA ROOMS • קומה FLOOR • SIZE מ״ר"
+            const priceMatch = rawText.match(/₪\s*([\d,]+)/);
+            const roomsMatch = rawText.match(/([\d.]+)\s*חדרים/);
+            const floorMatch = rawText.match(/קומה\s*[‎]*([\dקרקע]+)/);
+            const sizeMatch = rawText.match(/([\d,]+)\s*מ[״"']?ר/);
+            
+            const price = priceMatch ? `₪${priceMatch[1]}` : '';
+            const rooms = roomsMatch ? `${roomsMatch[1]} חדרים` : '';
+            const floor = floorMatch ? `קומה ${floorMatch[1]}` : '';
+            const size = sizeMatch ? `${sizeMatch[1]} מ״ר` : '';
+            
+            // Build a clean summary text - remove duplicates that Yad2 sometimes has
+            let text = rawText.substring(0, 300);
+            
+            // Remove duplicate price patterns like "₪ 12,000₪ 12,000" -> "₪ 12,000"
+            text = text.replace(/(₪\s*[\d,]+)(₪\s*[\d,]+)/g, '$1');
+            
+            // Remove other duplicate patterns (exact half duplicates)
+            if (text.length > 100) {
+                const halfLen = Math.floor(text.length / 2);
+                const firstHalf = text.substring(0, halfLen);
+                const secondHalf = text.substring(halfLen);
+                if (firstHalf === secondHalf) {
+                    text = firstHalf;
+                }
             }
             
-            // Clean up the text
-            text = text.replace(/\s+/g, ' ').substring(0, 500);
-            
-            // Extract various details
-            const price = $link.find('[class*="price"]').text().trim() || 
-                          $link.find('[data-testid="price"]').text().trim();
-            const location = $link.find('[class*="location"], [class*="address"]').text().trim();
-            const rooms = $link.find('[class*="room"]').text().trim();
-            const size = $link.find('[class*="square"], [class*="size"]').text().trim();
+            // Clean up any double spaces
+            text = text.replace(/\s+/g, ' ').trim();
             
             items.push({
                 id: itemId,
                 imageUrl: imgSrc,
                 url: itemUrl || '',
                 price,
-                location,
                 rooms,
+                floor,
                 size,
                 text: text || 'דירה להשכרה'
             });
@@ -215,8 +238,8 @@ const checkIfHasNewItems = async (items, topic) => {
                 imageUrl: item.imageUrl,
                 url: item.url,
                 price: item.price,
-                location: item.location,
                 rooms: item.rooms,
+                floor: item.floor,
                 size: item.size,
                 text: item.text,
                 addedAt: new Date().toISOString()
@@ -285,26 +308,25 @@ const formatItemCaption = (item, topic) => {
     if (item.price) {
         caption += `💰 מחיר: ${item.price}\n`;
     }
-    if (item.location) {
-        caption += `📍 מיקום: ${item.location}\n`;
-    }
     if (item.rooms) {
         caption += `🚪 חדרים: ${item.rooms}\n`;
+    }
+    if (item.floor) {
+        caption += `🏢 קומה: ${item.floor}\n`;
     }
     if (item.size) {
         caption += `📐 גודל: ${item.size}\n`;
     }
     
-    // Add some of the text if we don't have structured data
-    if (!item.price && !item.location && item.text) {
-        // Clean and truncate text for caption (Telegram limit is 1024 chars)
-        const cleanText = item.text.substring(0, 400);
-        caption += `\n${cleanText}`;
+    // Add the text summary
+    if (item.text && item.text !== 'דירה להשכרה') {
+        const cleanText = item.text.substring(0, 200);
+        caption += `\n📝 ${cleanText}`;
     }
     
     // Add the URL link at the end
     if (item.url) {
-        caption += `\n\n🔗 <a href="${item.url}">לחץ כאן לצפייה במודעה</a>`;
+        caption += `\n\n🔗 <a href="${item.url}">לצפייה במודעה</a>`;
     }
     
     return caption;
@@ -321,27 +343,22 @@ const scrape = async (topic, url) => {
         const scrapedItems = await scrapeItems(url);
         console.log(`Found ${scrapedItems.length} total items for "${topic}"`);
         
-        const newItems = await checkIfHasNewItems(scrapedItems, topic);
+        // Apply limit BEFORE saving - only process up to maxResultsPerRun items
+        const limitedItems = scrapedItems.slice(0, maxResultsPerRun);
+        const newItems = await checkIfHasNewItems(limitedItems, topic);
         
         if (newItems.length > 0) {
-            // Limit to maxResultsPerRun
-            const itemsToSend = newItems.slice(0, maxResultsPerRun);
-            const skippedCount = newItems.length - itemsToSend.length;
-            
-            console.log(`Sending ${itemsToSend.length} new items to Telegram for "${topic}"`);
-            if (skippedCount > 0) {
-                console.log(`(Skipping ${skippedCount} additional items due to maxResultsPerRun limit)`);
-            }
+            console.log(`Sending ${newItems.length} new items to Telegram for "${topic}"`);
             
             // Send summary message
             await sendTelegramMessage(
                 telenode, 
-                `🎉 נמצאו ${newItems.length} דירות חדשות!\n${skippedCount > 0 ? `(מציג ${itemsToSend.length} מתוכן)` : ''}`, 
+                `🎉 נמצאו ${newItems.length} דירות חדשות!`, 
                 chatId
             );
             
             // Send each item as a separate photo message
-            for (const item of itemsToSend) {
+            for (const item of newItems) {
                 const caption = formatItemCaption(item, topic);
                 await sendTelegramPhoto(apiToken, chatId, item.imageUrl, caption);
                 

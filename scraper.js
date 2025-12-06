@@ -4,31 +4,64 @@ const fs = require('fs');
 const { chromium } = require('playwright');
 const config = require('./config.json');
 
+// Check if running in test mode (no telegram credentials)
+const isTestMode = process.argv.includes('--test') || 
+    (!process.env.API_TOKEN && !config.telegramApiToken);
+
+if (isTestMode) {
+    console.log('🧪 Running in TEST MODE - Telegram messages will be skipped\n');
+}
+
 const getYad2Response = async (url) => {
     try {
         const browser = await chromium.launch({
-            headless: true
+            headless: true,
+            args: [
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor'
+            ]
         });
+        
         const context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            viewport: { width: 1920, height: 1080 },
+            locale: 'he-IL',
+            timezoneId: 'Asia/Jerusalem',
+            geolocation: { latitude: 32.0853, longitude: 34.7818 },
+            permissions: ['geolocation']
         });
+        
+        // Override navigator properties to avoid detection
+        await context.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['he-IL', 'he', 'en-US', 'en'] });
+            window.chrome = { runtime: {} };
+        });
+        
         const page = await context.newPage();
         
         const response = await page.goto(url, {
-            waitUntil: 'networkidle'
+            waitUntil: 'domcontentloaded',
+            timeout: 60000
         });
+        
+        // Simulate human-like behavior
+        await page.waitForTimeout(2000);
+        await page.mouse.move(100, 200);
+        await page.waitForTimeout(500);
+        await page.evaluate(() => window.scrollBy(0, 300));
+        await page.waitForTimeout(2000);
         
         const status = response.status();
         const statusText = response.statusText();
-        const headers = response.headers();
         const html = await page.content();
         
-        console.log('=== HTTP Response ===');
-        console.log(`URL: ${url}`);
-        console.log(`Status: ${status} ${statusText}`);
-        console.log(`Headers:`, JSON.stringify(headers, null, 2));
-        console.log(`Response Body Length: ${html.length} characters`);
-        console.log('===================');
+        console.log(`HTTP Response: ${status} ${statusText} (${html.length} chars)`);
         
         await browser.close();
         return html;
@@ -43,20 +76,37 @@ const scrapeItemsAndExtractImgUrls = async (url) => {
     if (!yad2Html) {
         throw new Error("Could not get Yad2 response");
     }
+    
     const $ = cheerio.load(yad2Html);
     const title = $("title")
     const titleText = title.first().text();
+    console.log(`Page title: "${titleText}"`);
+    
     if (titleText === "ShieldSquare Captcha") {
         throw new Error("Bot detection");
     }
-    const $feedItems = $(".feeditem").find(".pic");
-    if (!$feedItems) {
-        throw new Error("Could not find feed items");
+    
+    // Try to find feed items with different selectors
+    let $feedItems = $(".feeditem").find(".pic");
+    console.log(`Found ${$feedItems.length} items with selector ".feeditem .pic"`);
+    
+    // Try alternative selectors if main one doesn't work
+    if ($feedItems.length === 0) {
+        $feedItems = $('[data-testid="feed-item"]');
+        console.log(`Found ${$feedItems.length} items with selector '[data-testid="feed-item"]'`);
     }
+    if ($feedItems.length === 0) {
+        $feedItems = $('[class*="feed"]');
+        console.log(`Found ${$feedItems.length} items with selector '[class*="feed"]'`);
+    }
+    
     const imageUrls = []
     $feedItems.each((_, elm) => {
         const imgSrc = $(elm).find("img").attr('src');
-        if (imgSrc) {
+        if (imgSrc && 
+            imgSrc.includes('img.yad2.co.il/Pic/') &&  // Only actual listing images
+            !imgSrc.includes('placeholder') &&
+            !imgSrc.includes('logo')) {
             imageUrls.push(imgSrc)
         }
     })
@@ -110,12 +160,20 @@ const createPushFlagForWorkflow = () => {
     fs.writeFileSync("push_me", "")
 }
 
+const sendTelegramMessage = async (telenode, message, chatId) => {
+    if (isTestMode) {
+        console.log(`[Telegram] ${message}`);
+        return;
+    }
+    await telenode.sendTextMessage(message, chatId);
+}
+
 const scrape = async (topic, url) => {
     const apiToken = process.env.API_TOKEN || config.telegramApiToken;
     const chatId = process.env.CHAT_ID || config.chatId;
     const telenode = new Telenode({apiToken})
     try {
-        await telenode.sendTextMessage(`Starting scanning ${topic} on link:\n${url}`, chatId)
+        await sendTelegramMessage(telenode, `Starting scanning ${topic} on link:\n${url}`, chatId)
         const scrapeImgResults = await scrapeItemsAndExtractImgUrls(url);
         console.log(`Found ${scrapeImgResults.length} total items for "${topic}"`);
         const newItems = await checkIfHasNewItem(scrapeImgResults, topic);
@@ -123,17 +181,17 @@ const scrape = async (topic, url) => {
             const newItemsJoined = newItems.join("\n----------\n");
             const msg = `${newItems.length} new items:\n${newItemsJoined}`
             console.log(`Sending ${newItems.length} new items to Telegram for "${topic}"`);
-            await telenode.sendTextMessage(msg, chatId);
+            await sendTelegramMessage(telenode, msg, chatId);
         } else {
             console.log(`No new items found for "${topic}"`);
-            await telenode.sendTextMessage("No new items were added", chatId);
+            await sendTelegramMessage(telenode, "No new items were added", chatId);
         }
     } catch (e) {
         let errMsg = e?.message || "";
         if (errMsg) {
             errMsg = `Error: ${errMsg}`
         }
-        await telenode.sendTextMessage(`Scan workflow failed... 😥\n${errMsg}`, chatId)
+        await sendTelegramMessage(telenode, `Scan workflow failed... 😥\n${errMsg}`, chatId)
         throw new Error(e)
     }
 }

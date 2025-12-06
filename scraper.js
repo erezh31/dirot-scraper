@@ -353,34 +353,41 @@ const scrape = async (topic, url) => {
                 const caption = formatItemCaption(item, topic);
                 await sendTelegramPhoto(apiToken, chatId, item.imageUrl, caption);
                 
-                // Small delay between messages to avoid rate limiting
-                await new Promise(resolve => setTimeout(resolve, 500));
+                // Delay between messages to avoid Telegram rate limiting
+                await new Promise(resolve => setTimeout(resolve, 1500));
             }
             
         } else {
             console.log(`No new items found for "${topic}"`);
         }
     } catch (e) {
-        let errMsg = e?.message || "";
-        if (errMsg) {
-            errMsg = `Error: ${errMsg}`
+        console.error('Scrape error:', e);
+        let errMsg = e?.message || String(e);
+        try {
+            await sendTelegramMessage(telenode, `❌ הסריקה נכשלה... 😥\n${errMsg}`, chatId);
+        } catch (telegramErr) {
+            console.error('Failed to send error message to Telegram:', telegramErr);
         }
-        await sendTelegramMessage(telenode, `❌ הסריקה נכשלה... 😥\n${errMsg}`, chatId)
-        throw new Error(e)
+        throw e;
     }
 }
 
 const program = async () => {
     console.log(`Max results per run: ${maxResultsPerRun}`);
     
-    await Promise.all(config.projects.filter(project => {
+    // Run projects sequentially to avoid Telegram rate limiting
+    const activeProjects = config.projects.filter(project => {
         if (project.disabled) {
             console.log(`Topic "${project.topic}" is disabled. Skipping.`);
         }
         return !project.disabled;
-    }).map(async project => {
-        await scrape(project.topic, project.url)
-    }))
+    });
+    
+    for (const project of activeProjects) {
+        await scrape(project.topic, project.url);
+        // Delay between projects
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
 };
 
 program();

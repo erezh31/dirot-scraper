@@ -2,7 +2,7 @@ name: Yad2 Scraper
 
 on:
   schedule:
-    - cron: '*/20 6-20 * * *'  # Every 15 min, 5AM-10PM Israel time (UTC+2/+3)
+    - cron: '*/15 6-20 * * *'  # Every 20 min, 8AM-10PM Israel time (UTC+2/+3)
   workflow_dispatch:
     branches:
       - '**'
